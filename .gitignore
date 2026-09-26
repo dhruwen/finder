@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+.venv/
+build/
+dist/
+*.spec.bak
+.pytest_cache/
+.finder_index/
+*.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm
