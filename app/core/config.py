@@ -41,6 +41,12 @@ class Settings:
     index_paths: dict[str, str] = field(default_factory=dict)  # root -> index db path
     show_mismatch_warnings: bool = True
     ask_before_rebuild: bool = True
+    use_ai_suggestions: bool = True
+    # "ask" | "open_file" | "open_location" - what happens when a search
+    # result is double-clicked. "ask" shows a prompt each time; the other
+    # two are set either from that prompt's "always do this" checkbox or
+    # directly in Settings.
+    default_file_action: str = "ask"
     last_root: str | None = None
 
     @classmethod

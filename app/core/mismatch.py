@@ -22,7 +22,7 @@ def detect_mismatch(
         a, b = name_meta.client_name.lower(), folder_meta.client_name.lower()
         if a != b and a not in b and b not in a:
             reasons.append(
-                f"Folder suggests client '{folder_meta.client_name}', "
+                f"Folder suggests client/employee '{folder_meta.client_name}', "
                 f"file name suggests '{name_meta.client_name}'"
             )
 

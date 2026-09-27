@@ -11,17 +11,21 @@ import time
 from pathlib import Path
 
 from PyQt6.QtCore import Qt
+from PyQt6.QtGui import QColor
 from PyQt6.QtWidgets import (
     QWizard, QWizardPage, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QRadioButton, QButtonGroup, QTableWidget, QTableWidgetItem, QHeaderView,
     QAbstractItemView, QProgressBar, QMessageBox, QFileDialog, QCheckBox,
-    QTextEdit,
+    QTextEdit, QTabWidget, QTreeWidget, QTreeWidgetItem, QWidget,
 )
 
 from app.core.migration import summarize, write_report
 from app.ui.app_state import AppState
+from app.ui.icons import AI_BADGE, FOLDER_ICON, file_icon
 from app.ui.workers import RestructureApplyWorker, RestructurePlanWorker
 from app.ui import os_utils
+
+NEW_FOLDER_COLOR = QColor("#2563eb")  # app accent color (see style.py)
 
 PAGE_ROOT, PAGE_MODE, PAGE_PREVIEW, PAGE_CONFIRM, PAGE_PROGRESS, PAGE_DONE = range(6)
 
@@ -90,29 +94,57 @@ class ModePage(QWizardPage):
 
 
 class PreviewPage(QWizardPage):
+    TREE_PREVIEW_LIMIT = 500  # cap tree nodes so a huge folder stays responsive
+
     def __init__(self, state: AppState):
         super().__init__()
         self.state = state
         self.setTitle("Step 3: Preview changes")
         self.plan = None
         self._worker = None
+
         layout = QVBoxLayout(self)
         self.summary_label = QLabel("Computing preview…")
+        self.summary_label.setWordWrap(True)
         layout.addWidget(self.summary_label)
-        self.table = QTableWidget(0, 3)
-        self.table.setHorizontalHeaderLabels(["Old path", "New path", "Note"])
+
+        self.tabs = QTabWidget()
+        layout.addWidget(self.tabs)
+
+        tree_tab = QWidget()
+        tree_layout = QVBoxLayout(tree_tab)
+        tree_layout.setContentsMargins(0, 6, 0, 0)
+        legend = QLabel(
+            f"{FOLDER_ICON} Folder &nbsp;&nbsp; "
+            f'<span style="color:{NEW_FOLDER_COLOR.name()};">{FOLDER_ICON} New folder</span> &nbsp;&nbsp; '
+            f"{AI_BADGE} Name improved by AI"
+        )
+        legend.setStyleSheet("color: #6b7280; font-size: 11px;")
+        tree_layout.addWidget(legend)
+        self.tree = QTreeWidget()
+        self.tree.setHeaderHidden(True)
+        self.tree.setIndentation(18)
+        self.tree.setAlternatingRowColors(True)
+        tree_layout.addWidget(self.tree)
+        self.tabs.addTab(tree_tab, "New Folder Structure")
+
+        self.table = QTableWidget(0, 4)
+        self.table.setHorizontalHeaderLabels(["Old path", "New path", "AI", "Note"])
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.table.setAlternatingRowColors(True)
         self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
-        layout.addWidget(self.table)
+        self.tabs.addTab(self.table, "File-by-File Changes")
 
     def initializePage(self) -> None:
         wizard = self.wizard()
         mode = wizard.mode_page.mode()
-        self.summary_label.setText("Computing preview…")
+        self.summary_label.setText("Analyzing folder (this may take a few seconds)…")
         self.table.setRowCount(0)
+        self.tree.clear()
         db_path = self.state.settings.index_path_for(self.state.current_root)
-        self._worker = RestructurePlanWorker(self.state.current_root, db_path, mode)
+        use_ai = self.state.settings.use_ai_suggestions
+        self._worker = RestructurePlanWorker(self.state.current_root, db_path, mode, use_ai=use_ai)
         self._worker.finished_ok.connect(self._on_plan_ready)
         self._worker.failed.connect(self._on_plan_failed)
         self._worker.start()
@@ -121,25 +153,122 @@ class PreviewPage(QWizardPage):
     def _on_plan_ready(self, plan) -> None:
         self.plan = plan
         self.wizard().plan = plan
+
         self.table.setRowCount(len(plan.changes))
         for r, change in enumerate(plan.changes):
             self.table.setItem(r, 0, QTableWidgetItem(change.old_path))
             self.table.setItem(r, 1, QTableWidgetItem(change.new_path))
-            self.table.setItem(r, 2, QTableWidgetItem(change.conflict or ""))
+            self.table.setItem(r, 2, QTableWidgetItem(f"{AI_BADGE} AI" if change.ai_assisted else ""))
+            self.table.setItem(r, 3, QTableWidgetItem(change.conflict or ""))
+
+        self._populate_tree(plan)
+
+        if plan.root_is_project:
+            self.summary_label.setText(
+                "This folder looks like a software project (it contains .git, package.json, "
+                "requirements.txt, or similar) — Finder never restructures source code or "
+                "dependency folders, since that would break the project. Nothing will be "
+                "changed here. Choose a different folder if you meant to restructure a "
+                "document archive instead."
+            )
+            self.completeChanged.emit()
+            return
+
+        if plan.ai_available:
+            ai_note = f"AI-assisted analysis improved the name on {plan.ai_suggestions_used} file(s). "
+        elif self.state.settings.use_ai_suggestions:
+            ai_note = "AI-assisted analysis wasn't available on this computer, so standard rules were used. "
+        else:
+            ai_note = ""
+        project_note = (
+            f"{plan.skipped_project_files} file(s) inside a detected software project folder "
+            f"were left untouched. "
+            if plan.skipped_project_files
+            else ""
+        )
         self.summary_label.setText(
             f"{plan.files_affected} file(s) will be moved/renamed. "
             f"{len(plan.new_folders)} new folder(s) will be created. "
             f"{plan.conflicts} naming conflict(s) auto-resolved. "
-            f"{plan.skipped_unchanged} file(s) already match the convention and are skipped."
+            f"{plan.skipped_unchanged} file(s) already match the convention and are skipped. "
+            f"{project_note}"
+            f"{ai_note}"
         )
         self.completeChanged.emit()
+
+    def _populate_tree(self, plan) -> None:
+        """Visual preview of the resulting folder layout, not just a flat
+        list of old->new paths — icons distinguish folders from file types
+        at a glance, blue marks folders that don't exist yet, and ✨ marks a
+        name the AI step improved, so the shape of the result (and what's
+        actually changing) is obvious without reading every path."""
+        root = Path(self.state.current_root)
+        changes = plan.changes[: self.TREE_PREVIEW_LIMIT]
+
+        rel_parts_by_change = []
+        file_counts: dict[tuple[str, ...], int] = {(): 0}
+        for change in changes:
+            try:
+                rel_parts = Path(change.new_path).relative_to(root).parts
+            except ValueError:
+                continue
+            rel_parts_by_change.append((change, rel_parts))
+            for depth in range(len(rel_parts) + 1):
+                key = rel_parts[:depth]
+                file_counts[key] = file_counts.get(key, 0) + 1
+
+        def count_label(key: tuple[str, ...]) -> str:
+            n = file_counts.get(key, 0)
+            return f"  ({n} file{'s' if n != 1 else ''})"
+
+        tree_root = QTreeWidgetItem([f"{FOLDER_ICON} {root.name}{count_label(())}"])
+        self._style_folder_item(tree_root, is_new=False)
+        self.tree.addTopLevelItem(tree_root)
+        nodes: dict[tuple[str, ...], QTreeWidgetItem] = {(): tree_root}
+
+        for change, rel_parts in rel_parts_by_change:
+            for depth in range(1, len(rel_parts) + 1):
+                key = rel_parts[:depth]
+                if key in nodes:
+                    continue
+                is_file = depth == len(rel_parts)
+                name = rel_parts[depth - 1]
+                parent = nodes[rel_parts[: depth - 1]]
+
+                if is_file:
+                    ext = Path(change.new_path).suffix.lstrip(".")
+                    label = f"{file_icon(ext)} {name}"
+                    if change.ai_assisted:
+                        label = f"{AI_BADGE} {label}"
+                    item = QTreeWidgetItem([label])
+                else:
+                    folder_path = str(root.joinpath(*key))
+                    is_new = folder_path in plan.new_folders
+                    item = QTreeWidgetItem([f"{FOLDER_ICON} {name}{count_label(key)}"])
+                    self._style_folder_item(item, is_new)
+
+                parent.addChild(item)
+                nodes[key] = item
+
+        if len(plan.changes) > self.TREE_PREVIEW_LIMIT:
+            more = QTreeWidgetItem([f"… and {len(plan.changes) - self.TREE_PREVIEW_LIMIT} more file(s)"])
+            tree_root.addChild(more)
+
+        self.tree.expandAll()
+
+    def _style_folder_item(self, item: QTreeWidgetItem, is_new: bool) -> None:
+        font = item.font(0)
+        font.setBold(True)
+        item.setFont(0, font)
+        if is_new:
+            item.setForeground(0, NEW_FOLDER_COLOR)
 
     def _on_plan_failed(self, error: str) -> None:
         self.summary_label.setText(f"Failed to compute preview: {error}")
         self.completeChanged.emit()
 
     def isComplete(self) -> bool:
-        return self.plan is not None and self.plan.files_affected > 0
+        return self.plan is not None and self.plan.files_affected > 0 and not self.plan.root_is_project
 
 
 class ConfirmPage(QWizardPage):

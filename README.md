@@ -1,10 +1,17 @@
 # Finder — Desktop File Search & Restructuring Tool (Phase 1)
 
-A local, offline desktop tool for CA/finance file archives: very fast file
-search over an indexed folder, and safe, confirmation-driven restructuring
-and renaming for messy folders. No AI, no file-content reading, no network
-access — everything is built on a local SQLite index of file names, paths,
-and filesystem metadata.
+A local, offline desktop tool for CA/finance and general corporate file
+archives: very fast file search over an indexed folder, and safe,
+confirmation-driven restructuring and renaming for messy folders. Client and
+document-type detection are learned from each folder's own files (not a
+hardcoded finance-only list — a law firm's "NDA"/"Deposition" or an
+engineering team's own recurring category words get picked up just as well
+as a CA's "ITR"/"GST"), so the same tool works on any corporate file
+structure. Search and browsing are pure logic/index — no AI, no
+file-content reading, no network access. The Restructure wizard optionally
+uses a small, fully-local NER model to further improve client/employee name
+detection (see [docs/DEVELOPER.md](docs/DEVELOPER.md#local-ai-assist-restructuring-only));
+it never phones home and can be turned off in Settings.
 
 See [docs/USER_GUIDE.md](docs/USER_GUIDE.md) for how to use the app, and
 [docs/DEVELOPER.md](docs/DEVELOPER.md) for the architecture and how to build

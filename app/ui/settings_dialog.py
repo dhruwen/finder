@@ -1,53 +1,20 @@
-"""Settings dialog: everything that isn't day-to-day searching lives here —
-index management, restructuring, warnings, and preferences — behind a single
-gear button so the main page stays uncluttered for non-technical users.
+"""Settings dialog: everything that isn't day-to-day searching or
+restructuring lives here — index management, warnings, and preferences —
+behind a single gear button so the main page stays uncluttered for
+non-technical users. Restructure & Rename lives as its own button directly
+on the main page (home_screen.py) instead of in here, since it's a primary
+feature, not a settings tweak — see HomeScreen.open_restructure_wizard.
 """
 from __future__ import annotations
 
-from PyQt6.QtWidgets import (
-    QDialog, QVBoxLayout, QHBoxLayout, QListWidget, QStackedWidget,
-    QPushButton, QWidget, QLabel,
-)
+from PyQt6.QtWidgets import QDialog, QVBoxLayout, QHBoxLayout, QListWidget, QStackedWidget, QPushButton
 
 from app.ui.app_state import AppState
 from app.ui.index_screen import IndexScreen
 from app.ui.warnings_screen import WarningsScreen
 from app.ui.settings_screen import SettingsScreen
-from app.ui.restructure_wizard import RestructureWizard
 
-NAV_ITEMS = ["Index Management", "Restructure & Rename", "Warnings", "Preferences"]
-
-
-class RestructurePage(QWidget):
-    def __init__(self, state: AppState, parent=None):
-        super().__init__(parent)
-        self.state = state
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(16, 16, 16, 16)
-        layout.setSpacing(12)
-
-        title = QLabel("Restructure & Rename Files")
-        title.setObjectName("screenTitle")
-        layout.addWidget(title)
-
-        desc = QLabel(
-            "For folders with inconsistent structure and naming, this wizard proposes a "
-            "standard layout (Received/Year/Month/Client/DocType) and file names, shows a "
-            "full preview of every change, and asks for explicit confirmation before touching "
-            "any file. Nothing is changed until you approve the preview."
-        )
-        desc.setWordWrap(True)
-        layout.addWidget(desc)
-
-        start_btn = QPushButton("Start Restructure Wizard")
-        start_btn.setObjectName("primaryButton")
-        start_btn.clicked.connect(self._start_wizard)
-        layout.addWidget(start_btn)
-        layout.addStretch(1)
-
-    def _start_wizard(self) -> None:
-        wizard = RestructureWizard(self.state, self)
-        wizard.exec()
+NAV_ITEMS = ["Index Management", "Warnings", "Preferences"]
 
 
 class SettingsDialog(QDialog):
@@ -67,7 +34,6 @@ class SettingsDialog(QDialog):
 
         self.stack = QStackedWidget()
         self.stack.addWidget(IndexScreen(state))
-        self.stack.addWidget(RestructurePage(state))
         self.stack.addWidget(WarningsScreen(state))
         self.stack.addWidget(SettingsScreen(state))
 

@@ -48,16 +48,17 @@ class RestructurePlanWorker(QThread):
     finished_ok = pyqtSignal(object)  # RestructurePlan
     failed = pyqtSignal(str)
 
-    def __init__(self, root: str, db_path: Path, mode: str):
+    def __init__(self, root: str, db_path: Path, mode: str, use_ai: bool = True):
         super().__init__()
         self.root = root
         self.db_path = db_path
         self.mode = mode
+        self.use_ai = use_ai
 
     def run(self) -> None:
         try:
             conn = db_mod.connect(self.db_path)
-            plan = plan_restructure(Path(self.root), conn, mode=self.mode)
+            plan = plan_restructure(Path(self.root), conn, mode=self.mode, use_ai=self.use_ai)
             conn.close()
             self.finished_ok.emit(plan)
         except Exception as e:  # noqa: BLE001

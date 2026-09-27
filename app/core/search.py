@@ -149,6 +149,22 @@ def list_distinct_doc_types(conn: sqlite3.Connection, root: str | None = None) -
     return [r["doc_type"] for r in rows]
 
 
+def list_distinct_extensions(conn: sqlite3.Connection, root: str | None = None) -> list[str]:
+    """Every file extension actually present in the index (not a hardcoded list)."""
+    if root:
+        rows = conn.execute(
+            "SELECT DISTINCT extension FROM files WHERE root=? AND extension IS NOT NULL "
+            "AND extension != '' ORDER BY extension",
+            (root,),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT DISTINCT extension FROM files WHERE extension IS NOT NULL AND extension != '' "
+            "ORDER BY extension"
+        ).fetchall()
+    return [r["extension"] for r in rows]
+
+
 def list_distinct_years(conn: sqlite3.Connection, root: str | None = None) -> list[int]:
     if root:
         rows = conn.execute(

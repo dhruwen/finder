@@ -19,12 +19,13 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
+from app.core import ner as ner_mod
+from app.core.metadata_extractor import MONTH_ABBREVIATIONS, STRUCTURAL_WORDS, strip_known_tokens
+from app.core.project_detection import build_project_exclusion_set, is_project_marker_dir
+
 UNKNOWN_CLIENT = "Unknown_Client"
 UNKNOWN_DOCTYPE = "Unknown_DocType"
 UNKNOWN_YEAR = "Unknown_Year"
-MONTH_NAMES_3 = [
-    "", "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
-]
 
 _INVALID_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 _VERSION_PATTERN = re.compile(r"\b[vV](\d{1,2})\b|\b(final|draft)\b", re.IGNORECASE)
@@ -51,8 +52,6 @@ def _extract_version(stem: str) -> str | None:
 
 def _description_from_stem(stem: str, client: str | None, doc_type: str | None) -> str:
     """Whatever's left of the filename after stripping recognized tokens."""
-    from app.core.metadata_extractor import strip_known_tokens
-
     tokens = strip_known_tokens(stem)
     if client:
         client_tokens = {t.lower() for t in re.split(r"\s+", client)}
@@ -69,6 +68,7 @@ class PlannedChange:
     old_path: str
     new_path: str
     conflict: str | None = None
+    ai_assisted: bool = False
 
 
 @dataclass
@@ -77,16 +77,24 @@ class RestructurePlan:
     new_folders: set[str] = field(default_factory=set)
     conflicts: int = 0
     skipped_unchanged: int = 0
+    ai_available: bool = False
+    ai_suggestions_used: int = 0
+    # Files left untouched because they sit inside a detected software
+    # project (.git, package.json, requirements.txt, node_modules, ...) —
+    # restructuring never reorganizes those. See project_detection.py.
+    skipped_project_files: int = 0
+    root_is_project: bool = False
 
     @property
     def files_affected(self) -> int:
         return len(self.changes)
 
 
-def _build_new_path(root: Path, row: sqlite3.Row, mode: str) -> Path:
+def _build_new_path(root: Path, row: sqlite3.Row, mode: str, client_override: str | None = None) -> Path:
     old_path = Path(row["path"])
     ext = row["extension"] or ""
-    client = sanitize_component(row["client_name"] or UNKNOWN_CLIENT)
+    client_name = client_override or row["client_name"]
+    client = sanitize_component(client_name or UNKNOWN_CLIENT)
     doc_type = sanitize_component(row["doc_type"] or UNKNOWN_DOCTYPE)
     year = row["year"]
     month = row["month"]
@@ -95,7 +103,7 @@ def _build_new_path(root: Path, row: sqlite3.Row, mode: str) -> Path:
         new_dir = old_path.parent
     else:
         year_str = str(year) if year else UNKNOWN_YEAR
-        month_str = MONTH_NAMES_3[month] if month and 1 <= month <= 12 else "Unknown_Month"
+        month_str = MONTH_ABBREVIATIONS[month] if month and 1 <= month <= 12 else "Unknown_Month"
         new_dir = root / "Received" / year_str / month_str / client / doc_type
 
     if year and month and 1 <= month <= 12:
@@ -106,7 +114,7 @@ def _build_new_path(root: Path, row: sqlite3.Row, mode: str) -> Path:
         date_prefix = "00000000"
 
     stem = old_path.stem
-    description = _description_from_stem(stem, row["client_name"], row["doc_type"])
+    description = _description_from_stem(stem, client_name, row["doc_type"])
     version = _extract_version(stem)
 
     parts = [date_prefix, client, doc_type, description]
@@ -117,12 +125,21 @@ def _build_new_path(root: Path, row: sqlite3.Row, mode: str) -> Path:
 
 
 def plan_restructure(
-    root: Path, conn: sqlite3.Connection, mode: str = "full", root_key: str | None = None
+    root: Path,
+    conn: sqlite3.Connection,
+    mode: str = "full",
+    root_key: str | None = None,
+    use_ai: bool = True,
 ) -> RestructurePlan:
     """Build a full rename/move plan for every indexed file under `root`.
 
     mode: "full" (move into canonical structure and rename) or
           "rename_only" (keep current folder, rename file in place).
+    use_ai: if True and a local NER model is available (see `app/core/ner.py`),
+            use it to suggest better client/employee names than the plain
+            regex/keyword extraction already stored on each row. Always
+            falls back to the stored value when the model is unavailable or
+            finds nothing usable — this never blocks planning.
     """
     assert mode in ("full", "rename_only")
     root = root.resolve()
@@ -130,11 +147,49 @@ def plan_restructure(
     rows = conn.execute("SELECT * FROM files WHERE root = ?", (root_key,)).fetchall()
 
     plan = RestructurePlan()
+    plan.ai_available = use_ai and ner_mod.is_available()
     used_destinations: dict[str, int] = {}
     existing_paths = {row["path"] for row in rows}
 
+    plan.root_is_project = is_project_marker_dir(root)
+    all_parent_dirs = {Path(row["parent_dir"]) for row in rows} | {root}
+    project_dirs = build_project_exclusion_set(all_parent_dirs, root)
+
     for row in rows:
-        new_path = _build_new_path(root, row, mode)
+        if Path(row["parent_dir"]) in project_dirs:
+            plan.skipped_project_files += 1
+            continue
+
+        client_override = None
+        ai_assisted = False
+        if plan.ai_available:
+            old_path_probe = Path(row["path"])
+            # The file's own name is the primary signal. Its parent folder's
+            # name is only added as extra context when it's actually likely
+            # to be meaningful (an organized client subfolder) - never the
+            # selected root itself (e.g. "CA_Data", "Documents") or a
+            # generic/structural folder name (e.g. "Misc", "dump"), both of
+            # which would otherwise get swept into the detected name once
+            # title-cased for the model (see ner.suggest_name).
+            parent_name = old_path_probe.parent.name
+            include_parent = (
+                old_path_probe.parent != root and parent_name.lower() not in STRUCTURAL_WORDS
+            )
+            context_parts = [old_path_probe.stem] + ([parent_name] if include_parent else [])
+            context = " ".join(context_parts).replace("_", " ")
+            # This file's own detected doc type (e.g. "Nda", learned from
+            # this folder's own files - see build_doc_type_vocabulary) is
+            # passed so a loose NER span can't leak it into the name, even
+            # when it's a category word the fixed CA/finance dictionary
+            # doesn't know about.
+            doc_type_hint = [row["doc_type"]] if row["doc_type"] else None
+            suggestion = ner_mod.suggest_name(context, discovered_vocab=doc_type_hint)
+            if suggestion and suggestion.lower() != (row["client_name"] or "").lower():
+                client_override = suggestion
+                ai_assisted = True
+                plan.ai_suggestions_used += 1
+
+        new_path = _build_new_path(root, row, mode, client_override)
         old_path = Path(row["path"])
         if new_path == old_path:
             plan.skipped_unchanged += 1
@@ -154,9 +209,22 @@ def plan_restructure(
                 conflict = "Destination path already exists among indexed files"
                 plan.conflicts += 1
 
-        plan.new_folders.add(str(new_path.parent))
+        # Every ancestor folder down to (not including) root may not exist
+        # yet either — e.g. for a brand-new "Received/2024/.../Audit" chain,
+        # not just the deepest "Audit" folder. The exists() filter below
+        # drops whichever of these turn out to already be on disk.
+        ancestor = new_path.parent
+        while True:
+            plan.new_folders.add(str(ancestor))
+            if ancestor == root or ancestor.parent == ancestor:
+                break
+            ancestor = ancestor.parent
+
         plan.changes.append(
-            PlannedChange(file_id=row["id"], old_path=str(old_path), new_path=str(new_path), conflict=conflict)
+            PlannedChange(
+                file_id=row["id"], old_path=str(old_path), new_path=str(new_path),
+                conflict=conflict, ai_assisted=ai_assisted,
+            )
         )
 
     # Only count folders that don't already exist on disk.

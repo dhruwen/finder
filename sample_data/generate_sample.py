@@ -24,6 +24,8 @@ FILES: dict[str, str] = {
     "Downloads/priya_bankstatement_feb2024.pdf": "dummy bank statement",
     "Client Files/Ramesh/ramesh audit fy22-23 v2.pdf": "dummy versioned audit",
     "Client Files/Ramesh/ramesh_ITR_2022.pdf": "mismatch demo: folder says Ramesh, year 2022 file in 2023 folder",
+    "Client Files/Ramesh/ramesh_audit_notes.v2": "extension demo: '.v2' is a version fragment, not a real "
+                                                  "file type, so it should not show up in the File type filter",
 }
 
 # Deliberately mismatched folder vs filename, for the Warnings screen demo.

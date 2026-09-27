@@ -1,0 +1,1 @@
+extension demo: '.v2' is a version fragment, not a real file type, so it should not show up in the File type filter

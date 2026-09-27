@@ -13,17 +13,39 @@
 
 import os
 import sys
-from PyInstaller.utils.hooks import collect_submodules
+from PyInstaller.utils.hooks import collect_submodules, collect_all
 
 block_cipher = None
 PROJECT_ROOT = os.path.abspath(os.path.join(SPECPATH, ".."))
 
+# spaCy + its small multilingual NER model (app/core/ner.py) are optional at
+# import time but, when present, need their data files (model weights,
+# vocab, meta.json) and C-extension submodules collected explicitly —
+# PyInstaller's static analysis can't see spaCy's dynamic imports on its own.
+# If these packages aren't installed, collect_all() below just returns
+# nothing and the build proceeds without them; the app still runs fine, it
+# just falls back to non-AI restructuring (see app/core/ner.is_available()).
+# Bundled so Help > User Guide works in the packaged app too (read at
+# runtime via app/ui/resources.resource_path, which resolves to sys._MEIPASS
+# in a frozen build).
+datas, binaries, hiddenimports = [
+    (os.path.join(PROJECT_ROOT, "docs", "USER_GUIDE.md"), "docs"),
+], [], collect_submodules("app")
+for pkg in ("spacy", "thinc", "xx_ent_wiki_sm"):
+    try:
+        pkg_datas, pkg_binaries, pkg_hidden = collect_all(pkg)
+        datas += pkg_datas
+        binaries += pkg_binaries
+        hiddenimports += pkg_hidden
+    except Exception:
+        pass
+
 a = Analysis(
     [os.path.join(PROJECT_ROOT, "app", "main.py")],
     pathex=[PROJECT_ROOT],
-    binaries=[],
-    datas=[],
-    hiddenimports=collect_submodules("app"),
+    binaries=binaries,
+    datas=datas,
+    hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

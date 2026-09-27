@@ -1,1 +1,10 @@
 PyQt6>=6.7,<7
+
+# Optional, fully-local NER model used only to improve client/employee name
+# detection during the Restructure wizard's preview step (see app/core/ner.py).
+# Never required: the app works fine without it, just with plain regex-based
+# name detection. Pinned to a direct wheel URL (rather than the usual
+# `python -m spacy download`) so `pip install -r requirements.txt` and
+# PyInstaller both see it as a normal, importable package.
+spacy>=3.7,<4
+https://github.com/explosion/spacy-models/releases/download/xx_ent_wiki_sm-3.8.0/xx_ent_wiki_sm-3.8.0-py3-none-any.whl

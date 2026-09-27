@@ -1,9 +1,10 @@
-"""The single main page: folder picker + search + results.
+"""The single main page: folder picker + search + results + restructuring.
 
-Everything a non-technical user needs day-to-day lives here: pick a folder
-once, then search it. Everything else (rebuilding the index, restructuring,
-warnings, preferences) lives behind the Settings button in the top bar, kept
-out of the way until someone actually wants it.
+Everything a non-technical user needs day-to-day lives here, visible on the
+page itself: pick a folder, search it, restructure/rename it. Only what
+genuinely doesn't belong on this page — rebuilding the index, mismatch
+warnings, and preferences — lives behind the Settings button, so it's out of
+the way without hiding anything that people reach for often.
 """
 from __future__ import annotations
 
@@ -11,29 +12,30 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from PyQt6.QtCore import Qt, QDate, pyqtSignal
+from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtGui import QAction
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLineEdit, QPushButton, QLabel,
-    QComboBox, QListWidget, QListWidgetItem, QDateEdit, QCheckBox,
+    QComboBox, QToolButton, QCheckBox,
     QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView, QMenu,
     QFileDialog, QMessageBox, QProgressBar, QFrame,
 )
 
-from app.core.search import (
-    SearchFilters, resolve_quick_range, search, list_distinct_doc_types, list_distinct_years,
-)
+from app.core.search import SearchFilters, search, list_distinct_years, list_distinct_extensions
+from app.core.metadata_extractor import month_label, extension_category, CATEGORY_ORDER
 from app.core.size_estimate import estimate, format_confirmation_message
 from app.ui.app_state import AppState
+from app.ui.icons import category_icon
 from app.ui.workers import IndexWorker
+from app.ui.restructure_wizard import RestructureWizard
 from app.ui import os_utils
 
-COMMON_EXTENSIONS = ["pdf", "xlsx", "xls", "docx", "doc", "csv", "txt", "ppt", "pptx", "jpg", "png", "zip"]
-MONTHS = ["Any", "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
-COLUMNS = ["File name", "Path", "Client", "Doc type", "Year", "Month", "Extension", "Modified"]
+COLUMNS = ["File name", "Path", "Name/Keyword", "Doc type", "Year", "Month", "Extension", "Modified"]
 
 
 class HomeScreen(QWidget):
     settingsRequested = pyqtSignal()
+    moreFiltersVisibilityChanged = pyqtSignal(bool)
 
     def __init__(self, state: AppState, parent=None):
         super().__init__(parent)
@@ -80,12 +82,19 @@ class HomeScreen(QWidget):
         self.folder_label.setStyleSheet("font-weight: 600;")
         self.change_folder_btn = QPushButton("Choose folder…")
         self.change_folder_btn.clicked.connect(self.choose_folder)
+
+        self.restructure_btn = QPushButton("Restructure && Rename…")
+        self.restructure_btn.setEnabled(False)
+        self.restructure_btn.setToolTip("Choose and index a folder first.")
+        self.restructure_btn.clicked.connect(self.open_restructure_wizard)
+
         settings_btn = QPushButton("⚙  Settings")
         settings_btn.clicked.connect(self.settingsRequested.emit)
 
         bar.addWidget(QLabel("📁"))
         bar.addWidget(self.folder_label, 1)
         bar.addWidget(self.change_folder_btn)
+        bar.addWidget(self.restructure_btn)
         bar.addSpacing(12)
         bar.addWidget(settings_btn)
         return bar
@@ -127,17 +136,11 @@ class HomeScreen(QWidget):
 
     def _build_basic_filters_row(self) -> QHBoxLayout:
         row = QHBoxLayout()
-        row.addWidget(QLabel("Client:"))
+        row.addWidget(QLabel("Name / Keyword:"))
         self.client_edit = QLineEdit()
-        self.client_edit.setPlaceholderText("e.g. John")
-        self.client_edit.setMaximumWidth(180)
+        self.client_edit.setPlaceholderText("any person, employee, client, or other name")
+        self.client_edit.setMaximumWidth(220)
         row.addWidget(self.client_edit)
-
-        row.addWidget(QLabel("Document type:"))
-        self.doctype_combo = QComboBox()
-        self.doctype_combo.addItem("Any")
-        self.doctype_combo.setMinimumWidth(140)
-        row.addWidget(self.doctype_combo)
 
         row.addWidget(QLabel("Year:"))
         self.year_combo = QComboBox()
@@ -146,7 +149,7 @@ class HomeScreen(QWidget):
 
         row.addStretch(1)
         self.more_filters_btn = QPushButton("More filters  ▾")
-        self.more_filters_btn.clicked.connect(self._toggle_more_filters)
+        self.more_filters_btn.clicked.connect(self.toggle_more_filters)
         row.addWidget(self.more_filters_btn)
         return row
 
@@ -155,58 +158,22 @@ class HomeScreen(QWidget):
         panel.setObjectName("moreFilters")
         panel.setVisible(False)
         self.more_filters_panel = panel
-        layout = QVBoxLayout(panel)
+        layout = QHBoxLayout(panel)
 
-        row1 = QHBoxLayout()
-        row1.addWidget(QLabel("Month:"))
-        self.month_combo = QComboBox()
-        self.month_combo.addItems(MONTHS)
-        row1.addWidget(self.month_combo)
+        layout.addWidget(QLabel("File type:"))
+        # One dropdown button per category (Documents, Code, Images, ...),
+        # each opening a checkable menu of just that category's extensions.
+        # Populated in _populate_category_filters — only categories that
+        # actually have files in the current index get a button at all.
+        self.category_row = QHBoxLayout()
+        self.category_row.setSpacing(6)
+        layout.addLayout(self.category_row, 1)
+        self.category_buttons: dict[str, QToolButton] = {}
+        self.category_actions: dict[str, dict[str, QAction]] = {}
 
-        row1.addWidget(QLabel("From:"))
-        self.date_from = QDateEdit(calendarPopup=True)
-        self.date_from.setDate(QDate.currentDate().addYears(-1))
-        row1.addWidget(self.date_from)
-        row1.addWidget(QLabel("To:"))
-        self.date_to = QDateEdit(calendarPopup=True)
-        self.date_to.setDate(QDate.currentDate())
-        row1.addWidget(self.date_to)
-        self.use_date_range = QCheckBox("Use date range")
-        row1.addWidget(self.use_date_range)
-        for label, key in [("This month", "this_month"), ("Past 3 mo", "past_3_months"),
-                            ("This year", "this_year"), ("Past 1 yr", "past_1_year")]:
-            btn = QPushButton(label)
-            btn.setProperty("quickRangeKey", key)
-            btn.clicked.connect(self._apply_quick_range)
-            row1.addWidget(btn)
-        row1.addStretch(1)
-        layout.addLayout(row1)
-
-        row2 = QHBoxLayout()
-        row2.addWidget(QLabel("File type:"))
-        self.extension_list = QListWidget()
-        self.extension_list.setFlow(QListWidget.Flow.LeftToRight)
-        self.extension_list.setWrapping(True)
-        self.extension_list.setFixedHeight(56)
-        for ext in COMMON_EXTENSIONS:
-            item = QListWidgetItem(ext)
-            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
-            item.setCheckState(Qt.CheckState.Unchecked)
-            self.extension_list.addItem(item)
-        row2.addWidget(self.extension_list, 1)
-        layout.addLayout(row2)
-
-        row3 = QHBoxLayout()
-        row3.addWidget(QLabel("Folder contains:"))
-        self.path_pattern_edit = QLineEdit()
-        self.path_pattern_edit.setPlaceholderText("e.g. Received/2024/*")
-        row3.addWidget(self.path_pattern_edit)
-        self.mismatch_only_check = QCheckBox("Only possibly-misplaced files")
-        row3.addWidget(self.mismatch_only_check)
         reset_btn = QPushButton("Reset filters")
         reset_btn.clicked.connect(self.reset_filters)
-        row3.addWidget(reset_btn)
-        layout.addLayout(row3)
+        layout.addWidget(reset_btn)
 
         return panel
 
@@ -226,10 +193,16 @@ class HomeScreen(QWidget):
         return self.table
 
     # -- folder selection / indexing -----------------------------------------
-    def _toggle_more_filters(self) -> None:
-        showing = not self.more_filters_panel.isVisible()
-        self.more_filters_panel.setVisible(showing)
-        self.more_filters_btn.setText("Fewer filters  ▴" if showing else "More filters  ▾")
+    def toggle_more_filters(self) -> None:
+        self.set_more_filters_visible(not self.more_filters_panel.isVisible())
+
+    def set_more_filters_visible(self, visible: bool) -> None:
+        """Single source of truth for the More Filters panel — driven by
+        either the in-page button or the menu bar's checkable View action,
+        which stay in sync via `moreFiltersVisibilityChanged`."""
+        self.more_filters_panel.setVisible(visible)
+        self.more_filters_btn.setText("Fewer filters  ▴" if visible else "More filters  ▾")
+        self.moreFiltersVisibilityChanged.emit(visible)
 
     def choose_folder(self) -> None:
         directory = QFileDialog.getExistingDirectory(self, "Choose folder to search")
@@ -271,6 +244,33 @@ class HomeScreen(QWidget):
         self.change_folder_btn.setEnabled(True)
         QMessageBox.critical(self, "Indexing failed", error)
 
+    def rebuild_current_index(self) -> None:
+        """Re-scan the currently selected folder (menu bar: File > Rebuild Index)."""
+        if not self.state.current_root:
+            QMessageBox.information(self, "No folder selected", "Choose a folder to search first.")
+            return
+        if self.state.settings.ask_before_rebuild:
+            reply = QMessageBox.question(
+                self, "Rebuild index",
+                f"Rebuild the search index for:\n{self.state.current_root}\n\n"
+                "This reads file names and metadata only (never file contents).",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                return
+        self._start_indexing()
+
+    def open_restructure_wizard(self) -> None:
+        """Launches the Restructure & Rename wizard directly from the main
+        page (the wizard itself still requires a full preview + explicit
+        confirmation before touching any file — this button only opens it)."""
+        if not self.state.current_root:
+            QMessageBox.information(self, "No folder selected", "Choose a folder to search first.")
+            return
+        wizard = RestructureWizard(self.state, self)
+        wizard.exec()
+        self.state.notify_index_changed()
+
     # -- reacting to state changes --------------------------------------------
     def _on_index_changed(self) -> None:
         has_root = bool(self.state.current_root)
@@ -279,6 +279,9 @@ class HomeScreen(QWidget):
 
         self.empty_state.setVisible(not is_indexed)
         self.search_area.setVisible(is_indexed)
+
+        self.restructure_btn.setEnabled(is_indexed)
+        self.restructure_btn.setToolTip("" if is_indexed else "Choose and index a folder first.")
 
         if has_root:
             self.folder_label.setText(self.state.current_root)
@@ -291,16 +294,6 @@ class HomeScreen(QWidget):
             return
 
         conn = self.state.conn
-        self.doctype_combo.blockSignals(True)
-        current_dt = self.doctype_combo.currentText()
-        self.doctype_combo.clear()
-        self.doctype_combo.addItem("Any")
-        for dt in list_distinct_doc_types(conn, self.state.current_root):
-            self.doctype_combo.addItem(dt)
-        idx = self.doctype_combo.findText(current_dt)
-        self.doctype_combo.setCurrentIndex(idx if idx >= 0 else 0)
-        self.doctype_combo.blockSignals(False)
-
         self.year_combo.blockSignals(True)
         current_year = self.year_combo.currentText()
         self.year_combo.clear()
@@ -311,66 +304,93 @@ class HomeScreen(QWidget):
         self.year_combo.setCurrentIndex(idx if idx >= 0 else 0)
         self.year_combo.blockSignals(False)
 
+        checked_before = set(self._checked_extensions())
+        self._populate_category_filters(conn, checked_before)
+
         self.run_search()
 
-    def _apply_quick_range(self) -> None:
-        btn = self.sender()
-        key = btn.property("quickRangeKey")
-        start_ts, end_ts = resolve_quick_range(key)
-        self.use_date_range.setChecked(True)
-        self.date_from.setDate(QDate.fromString(datetime.fromtimestamp(start_ts).strftime("%Y-%m-%d"), "yyyy-MM-dd"))
-        self.date_to.setDate(QDate.fromString(datetime.fromtimestamp(end_ts).strftime("%Y-%m-%d"), "yyyy-MM-dd"))
+    def _populate_category_filters(self, conn, checked_before: set[str]) -> None:
+        """One dropdown button per category actually present in this index
+        (Documents, Code, Images, ...) — categories with nothing in the
+        current folder don't get a button at all, so the row only ever
+        shows what's relevant here."""
+        by_category: dict[str, list[str]] = {}
+        for ext in list_distinct_extensions(conn, self.state.current_root):
+            by_category.setdefault(extension_category(ext), []).append(ext)
+
+        while self.category_row.count():
+            item = self.category_row.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+        self.category_buttons.clear()
+        self.category_actions.clear()
+
+        for category in CATEGORY_ORDER:
+            exts = by_category.get(category)
+            if not exts:
+                continue
+
+            btn = QToolButton()
+            btn.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+            menu = QMenu(btn)
+            actions: dict[str, QAction] = {}
+            for ext in sorted(exts):
+                action = QAction(ext, menu)
+                action.setCheckable(True)
+                action.setChecked(ext in checked_before)
+                action.toggled.connect(lambda _checked, cat=category: self._on_category_filter_changed(cat))
+                menu.addAction(action)
+                actions[ext] = action
+            btn.setMenu(menu)
+            self.category_row.addWidget(btn)
+            self.category_buttons[category] = btn
+            self.category_actions[category] = actions
+            self._refresh_category_button_label(category)
+
+        self.category_row.addStretch(1)
+
+    def _refresh_category_button_label(self, category: str) -> None:
+        btn = self.category_buttons.get(category)
+        actions = self.category_actions.get(category)
+        if not btn or not actions:
+            return
+        checked = sum(1 for a in actions.values() if a.isChecked())
+        icon = category_icon(category)
+        label = f"{icon} {category} ({checked}) ▾" if checked else f"{icon} {category} ▾"
+        btn.setText(label)
+
+    def _on_category_filter_changed(self, category: str) -> None:
+        self._refresh_category_button_label(category)
         self.run_search()
 
     def _checked_extensions(self) -> list[str]:
         result = []
-        for i in range(self.extension_list.count()):
-            item = self.extension_list.item(i)
-            if item.checkState() == Qt.CheckState.Checked:
-                result.append(item.text())
+        for actions in self.category_actions.values():
+            result.extend(ext for ext, action in actions.items() if action.isChecked())
         return result
 
     def reset_filters(self) -> None:
         self.search_box.clear()
         self.client_edit.clear()
-        self.doctype_combo.setCurrentIndex(0)
         self.year_combo.setCurrentIndex(0)
-        self.month_combo.setCurrentIndex(0)
-        self.use_date_range.setChecked(False)
-        for i in range(self.extension_list.count()):
-            self.extension_list.item(i).setCheckState(Qt.CheckState.Unchecked)
-        self.path_pattern_edit.clear()
-        self.mismatch_only_check.setChecked(False)
+        for category, actions in self.category_actions.items():
+            for action in actions.values():
+                action.blockSignals(True)
+                action.setChecked(False)
+                action.blockSignals(False)
+            self._refresh_category_button_label(category)
         self.run_search()
 
     def _collect_filters(self) -> SearchFilters:
         year = None
         if self.year_combo.currentText() != "Any":
             year = int(self.year_combo.currentText())
-        month = None
-        if self.month_combo.currentText() != "Any":
-            month = MONTHS.index(self.month_combo.currentText())
-        doc_types = []
-        if self.doctype_combo.currentText() != "Any":
-            doc_types = [self.doctype_combo.currentText()]
-
-        date_from = date_to = None
-        if self.use_date_range.isChecked():
-            date_from = datetime(self.date_from.date().year(), self.date_from.date().month(), self.date_from.date().day()).timestamp()
-            dt = self.date_to.date()
-            date_to = datetime(dt.year(), dt.month(), dt.day(), 23, 59, 59).timestamp()
 
         return SearchFilters(
             text=self.search_box.text(),
             client_name=self.client_edit.text(),
-            doc_types=doc_types,
             year=year,
-            month=month,
-            date_from=date_from,
-            date_to=date_to,
             extensions=self._checked_extensions(),
-            path_pattern=self.path_pattern_edit.text(),
-            only_mismatches=self.mismatch_only_check.isChecked(),
             root=self.state.current_root,
         )
 
@@ -390,7 +410,7 @@ class HomeScreen(QWidget):
             modified = datetime.fromtimestamp(row["modified_at"]).strftime("%Y-%m-%d %H:%M") if row["modified_at"] else ""
             values = [
                 row["name"], row["path"], row["client_name"] or "", row["doc_type"] or "",
-                str(row["year"] or ""), str(row["month"] or ""), row["extension"] or "", modified,
+                str(row["year"] or ""), month_label(row["month"]), row["extension"] or "", modified,
             ]
             for c, val in enumerate(values):
                 item = QTableWidgetItem(val)
@@ -411,10 +431,49 @@ class HomeScreen(QWidget):
         cell = self.table.item(row, 0)
         return cell.data(Qt.ItemDataRole.UserRole) if cell else None
 
+    def copy_selected_path_to_clipboard(self) -> None:
+        path = self._selected_path()
+        if not path:
+            self.status_label.setText("Select a result first to copy its path.")
+            return
+        from PyQt6.QtWidgets import QApplication
+        QApplication.clipboard().setText(path)
+        self.status_label.setText(f"Copied path to clipboard: {path}")
+
     def _open_selected_file(self) -> None:
         path = self._selected_path()
-        if path:
+        if not path:
+            return
+        action = self.state.settings.default_file_action
+        if action == "open_file":
             os_utils.open_file(path)
+        elif action == "open_location":
+            os_utils.reveal_in_file_manager(path)
+        else:
+            self._prompt_open_action(path)
+
+    def _prompt_open_action(self, path: str) -> None:
+        box = QMessageBox(self)
+        box.setWindowTitle("Open item")
+        box.setText(f"What would you like to do with:\n\n{Path(path).name}")
+        open_btn = box.addButton("Open File", QMessageBox.ButtonRole.AcceptRole)
+        reveal_btn = box.addButton("Open File Location", QMessageBox.ButtonRole.ActionRole)
+        box.addButton(QMessageBox.StandardButton.Cancel)
+        remember_check = QCheckBox("Always do this — don't ask again (change anytime in Settings)")
+        box.setCheckBox(remember_check)
+        box.exec()
+
+        clicked = box.clickedButton()
+        if clicked == open_btn:
+            os_utils.open_file(path)
+            if remember_check.isChecked():
+                self.state.settings.default_file_action = "open_file"
+                self.state.settings.save()
+        elif clicked == reveal_btn:
+            os_utils.reveal_in_file_manager(path)
+            if remember_check.isChecked():
+                self.state.settings.default_file_action = "open_location"
+                self.state.settings.save()
 
     def _show_context_menu(self, pos) -> None:
         path = self._selected_path()

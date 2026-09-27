@@ -1,8 +1,14 @@
 """Filesystem walker that builds/refreshes the metadata index.
 
 Two passes over the tree:
-  1. Collect folder names (cheap) to build a client-name vocabulary.
-  2. Walk files, extract metadata, stat, and upsert into SQLite.
+  1. Collect folder names and (stem, parent-folder-name) pairs cheaply (no
+     stat calls) to learn this tree's own client-name vocabulary
+     (`build_known_clients`) and document-category vocabulary
+     (`build_doc_type_vocabulary`) — both derived from the actual files
+     present, not a hardcoded industry list, so this works for any
+     corporate file structure, not just CA/finance.
+  2. Walk files again, extract metadata using that vocabulary, stat, and
+     upsert into SQLite.
 
 Permission errors on individual files/folders are caught and logged, never
 raised — the scan continues. Nothing outside the selected root is touched or
@@ -18,7 +24,12 @@ from pathlib import Path
 from typing import Callable
 
 from app.core import db as db_mod
-from app.core.metadata_extractor import build_known_clients, extract_all
+from app.core.metadata_extractor import (
+    build_doc_type_vocabulary,
+    build_known_clients,
+    extract_all,
+    normalize_extension,
+)
 from app.core.mismatch import detect_mismatch
 
 # Folders we never descend into: index metadata, VCS internals, OS junk.
@@ -33,17 +44,25 @@ class IndexStats:
     errors: list[str] = field(default_factory=list)
     elapsed_seconds: float = 0.0
     mismatches: int = 0
+    discovered_doc_types: list[str] = field(default_factory=list)
 
 
 ProgressCallback = Callable[[int, int, str], None]  # (done, total_estimate, current_path)
 
 
-def _iter_dirnames(root: Path) -> list[str]:
-    names: list[str] = []
-    for dirpath, dirnames, _filenames in os.walk(root, onerror=lambda e: None):
+def _collect_tree_info(root: Path) -> tuple[list[str], list[tuple[str, str]]]:
+    """One cheap walk (no stat calls): every folder name, and every file's
+    (stem, immediate-parent-folder-name) pair, used to learn this tree's own
+    client and doc-type vocabularies before classifying anything."""
+    dir_names: list[str] = []
+    file_entries: list[tuple[str, str]] = []
+    for dirpath, dirnames, filenames in os.walk(root, onerror=lambda e: None):
         dirnames[:] = [d for d in dirnames if d not in SKIP_DIR_NAMES]
-        names.extend(dirnames)
-    return names
+        dir_names.extend(dirnames)
+        parent_name = Path(dirpath).name
+        for fname in filenames:
+            file_entries.append((Path(fname).stem, parent_name))
+    return dir_names, file_entries
 
 
 def scan_root(
@@ -58,7 +77,10 @@ def scan_root(
     root = root.resolve()
     root_str = str(root)
 
-    known_clients = build_known_clients(_iter_dirnames(root))
+    dir_names, file_entries = _collect_tree_info(root)
+    known_clients = build_known_clients(dir_names)
+    discovered_doc_types = build_doc_type_vocabulary(file_entries, known_clients)
+    stats.discovered_doc_types = discovered_doc_types
 
     seen_paths: set[str] = set()
     done = 0
@@ -67,7 +89,7 @@ def scan_root(
         stats.folders_seen += 1
         rel_dir = os.path.relpath(dirpath, root)
         folder_text = rel_dir if rel_dir != "." else ""
-        folder_meta = extract_all(folder_text, known_clients) if folder_text else None
+        folder_meta = extract_all(folder_text, known_clients, discovered_doc_types) if folder_text else None
 
         for fname in filenames:
             if cancel_check and cancel_check():
@@ -80,8 +102,8 @@ def scan_root(
                 stats.errors.append(f"{fpath}: {e}")
                 continue
 
-            name_meta = extract_all(fpath.stem, known_clients)
-            ext = fpath.suffix.lower().lstrip(".")
+            name_meta = extract_all(fpath.stem, known_clients, discovered_doc_types)
+            ext = normalize_extension(fpath.suffix)
 
             mismatch_flag, mismatch_reason = detect_mismatch(name_meta, folder_meta)
             if mismatch_flag:

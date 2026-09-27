@@ -5,18 +5,24 @@ from pathlib import Path
 
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QLabel, QCheckBox, QGroupBox, QFormLayout,
-    QPushButton, QHBoxLayout, QFileDialog, QMessageBox, QTextBrowser,
+    QPushButton, QHBoxLayout, QFileDialog, QMessageBox, QTextBrowser, QComboBox,
 )
 
 from app import __version__
+from app.core import ner
 from app.ui.app_state import AppState
 
 ABOUT_TEXT = f"""
 <h3>Finder — File Search &amp; Restructuring Tool</h3>
 <p>Version {__version__}</p>
 <p>Local, offline file search and restructuring for CA/finance file archives.
-No AI, no file content is read or uploaded — only file names, paths, and
-filesystem metadata (size, modified date) are indexed.</p>
+File contents are never read or uploaded — only file names, paths, and
+filesystem metadata (size, modified date) are indexed. Search and everyday
+browsing use no AI at all.</p>
+<p>The Restructure wizard optionally uses a small AI model to help spot
+client/employee names in messy file names. It runs entirely on this
+computer, is bundled with the app, and never sends anything over a network
+connection. You can turn it off below.</p>
 <p><b>Permissions:</b> the app only reads/writes the folder you explicitly
 select as a root, plus its own settings and index files. It never accesses
 any other location on disk. Use it on folders you own; if you see permission
@@ -60,6 +66,31 @@ class SettingsScreen(QWidget):
         self.ask_rebuild_check.stateChanged.connect(self._save_prefs)
         prefs_layout.addWidget(self.show_warnings_check)
         prefs_layout.addWidget(self.ask_rebuild_check)
+
+        self.use_ai_check = QCheckBox("Use AI-assisted name suggestions during restructuring")
+        self.use_ai_check.setChecked(self.state.settings.use_ai_suggestions)
+        self.use_ai_check.stateChanged.connect(self._save_prefs)
+        prefs_layout.addWidget(self.use_ai_check)
+        ai_status = QLabel(
+            "Runs fully offline, on this computer only."
+            if ner.is_available()
+            else "Not available on this installation — restructuring will use standard rules only."
+        )
+        ai_status.setStyleSheet("color: #6b7280; margin-left: 22px;")
+        prefs_layout.addWidget(ai_status)
+
+        file_action_row = QHBoxLayout()
+        file_action_row.addWidget(QLabel("When you open a search result:"))
+        self.file_action_combo = QComboBox()
+        self.file_action_combo.addItem("Ask each time", "ask")
+        self.file_action_combo.addItem("Always open the file", "open_file")
+        self.file_action_combo.addItem("Always open its folder", "open_location")
+        current_idx = self.file_action_combo.findData(self.state.settings.default_file_action)
+        self.file_action_combo.setCurrentIndex(current_idx if current_idx >= 0 else 0)
+        self.file_action_combo.currentIndexChanged.connect(self._save_prefs)
+        file_action_row.addWidget(self.file_action_combo, 1)
+        prefs_layout.addLayout(file_action_row)
+
         layout.addWidget(prefs_group)
 
         about_group = QGroupBox("About")
@@ -98,4 +129,6 @@ class SettingsScreen(QWidget):
     def _save_prefs(self) -> None:
         self.state.settings.show_mismatch_warnings = self.show_warnings_check.isChecked()
         self.state.settings.ask_before_rebuild = self.ask_rebuild_check.isChecked()
+        self.state.settings.use_ai_suggestions = self.use_ai_check.isChecked()
+        self.state.settings.default_file_action = self.file_action_combo.currentData()
         self.state.settings.save()
