@@ -53,7 +53,7 @@ app/
                               # (no reindex) since AppState just reopens its existing DB
                               # connection.
     home_screen.py           # The single main page: folder picker, search box, basic
-                              # filters (Name/Keyword/Year), a collapsible "More
+                              # filter (Year), a collapsible "More
                               # filters" panel, the results table, and a Restructure &
                               # Rename button (disabled until a folder is indexed) that
                               # opens restructure_wizard.RestructureWizard directly.

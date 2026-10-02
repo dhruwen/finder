@@ -1,5 +1,6 @@
 """A single, neutral-plus-accent stylesheet applied app-wide for a
 professional, non-cluttered look (no theming system in Phase-1)."""
+from app.ui.resources import resource_path
 
 ACCENT = "#2563eb"
 ACCENT_DARK = "#1d4ed8"
@@ -8,6 +9,9 @@ SURFACE = "#ffffff"
 BORDER = "#d8dce1"
 TEXT = "#1f2430"
 MUTED = "#6b7280"
+INDICATOR_BORDER = "#8b93a1"
+# Forward slashes + quotes so the url() works on Windows and in paths with spaces.
+CHECK_ICON = resource_path("app", "ui", "assets", "check.svg").as_posix()
 
 STYLESHEET = f"""
 QWidget {{
@@ -110,6 +114,24 @@ QLineEdit, QComboBox, QDateEdit, QListWidget, QTableWidget, QTextEdit, QTextBrow
     padding: 4px 6px;
 }}
 
+/* Once QComboBox is styled at all, macOS sizes its popup list to the
+   combo's text area minus the check-mark column, so short items like
+   "2025" got clipped to "202". Give both a sensible floor. */
+QComboBox {{
+    min-width: 72px;
+}}
+
+QComboBox QAbstractItemView {{
+    min-width: 110px;
+    padding: 4px;
+    outline: none;
+}}
+
+QComboBox QAbstractItemView::item {{
+    min-height: 24px;
+    padding: 0 8px;
+}}
+
 QTableWidget {{
     gridline-color: {BORDER};
     selection-background-color: #dbe6fd;
@@ -127,6 +149,46 @@ QHeaderView::section {{
 
 QCheckBox, QRadioButton {{
     spacing: 8px;
+    background: transparent;
+}}
+
+/* Indicators are drawn explicitly: with the app-wide QWidget background
+   above, macOS's native style otherwise paints checkbox/radio indicators
+   invisibly (white on white), leaving just the label. */
+QCheckBox::indicator, QRadioButton::indicator {{
+    width: 14px;
+    height: 14px;
+    border: 1px solid {INDICATOR_BORDER};
+    background: {SURFACE};
+}}
+
+QCheckBox::indicator {{
+    border-radius: 4px;
+}}
+
+QRadioButton::indicator {{
+    border-radius: 8px;
+}}
+
+QCheckBox::indicator:hover, QRadioButton::indicator:hover {{
+    border-color: {ACCENT};
+}}
+
+QCheckBox::indicator:checked {{
+    background: {ACCENT};
+    border-color: {ACCENT};
+    image: url("{CHECK_ICON}");
+}}
+
+QRadioButton::indicator:checked {{
+    border-color: {ACCENT};
+    background: qradialgradient(cx:0.5, cy:0.5, radius:0.5, fx:0.5, fy:0.5,
+        stop:0 {ACCENT}, stop:0.45 {ACCENT}, stop:0.55 {SURFACE}, stop:1 {SURFACE});
+}}
+
+QCheckBox::indicator:disabled, QRadioButton::indicator:disabled {{
+    border-color: {BORDER};
+    background: #eef1f5;
 }}
 
 QProgressBar {{
