@@ -48,6 +48,11 @@ class Settings:
     # directly in Settings.
     default_file_action: str = "ask"
     last_root: str | None = None
+    # Folders whose new files get renamed to the folder's naming convention
+    # (see app/core/auto_rename.py). Each entry:
+    #   {"folder": str, "pattern": "auto" | "<template>",
+    #    "include_subfolders": bool, "enabled": bool}
+    auto_rename_rules: list[dict] = field(default_factory=list)
 
     @classmethod
     def load(cls) -> "Settings":

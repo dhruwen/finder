@@ -30,7 +30,7 @@ from app.ui.workers import IndexWorker
 from app.ui.restructure_wizard import RestructureWizard
 from app.ui import os_utils
 
-COLUMNS = ["File name", "Path", "Name/Keyword", "Doc type", "Year", "Month", "Extension", "Modified"]
+COLUMNS = ["File name", "Path", "Detected name", "Doc type", "Year", "Month", "Extension", "Modified"]
 
 
 class HomeScreen(QWidget):
@@ -43,6 +43,8 @@ class HomeScreen(QWidget):
         self._worker: IndexWorker | None = None
         self.state.indexChanged.connect(self._on_index_changed)
         self.state.rootChanged.connect(self._on_index_changed)
+        self.state.auto_rename.renamed.connect(self._on_auto_renamed)
+        self.state.auto_rename.failed.connect(self.status_label_set)
         self._build_ui()
         self._on_index_changed()
 
@@ -135,13 +137,11 @@ class HomeScreen(QWidget):
         return row
 
     def _build_basic_filters_row(self) -> QHBoxLayout:
+        # No separate name field: the search box already matches the
+        # "Detected name" column (it's part of the FTS index), so a second
+        # box that only searched that one column just looked broken when a
+        # word lived in the file name instead (e.g. "Challan").
         row = QHBoxLayout()
-        row.addWidget(QLabel("Name / Keyword:"))
-        self.client_edit = QLineEdit()
-        self.client_edit.setPlaceholderText("any person, employee, client, or other name")
-        self.client_edit.setMaximumWidth(220)
-        row.addWidget(self.client_edit)
-
         row.addWidget(QLabel("Year:"))
         self.year_combo = QComboBox()
         self.year_combo.addItem("Any")
@@ -371,7 +371,6 @@ class HomeScreen(QWidget):
 
     def reset_filters(self) -> None:
         self.search_box.clear()
-        self.client_edit.clear()
         self.year_combo.setCurrentIndex(0)
         for category, actions in self.category_actions.items():
             for action in actions.values():
@@ -388,7 +387,6 @@ class HomeScreen(QWidget):
 
         return SearchFilters(
             text=self.search_box.text(),
-            client_name=self.client_edit.text(),
             year=year,
             extensions=self._checked_extensions(),
             root=self.state.current_root,
@@ -421,6 +419,15 @@ class HomeScreen(QWidget):
 
         capped = " (showing first 2000)" if len(rows) == 2000 else ""
         self.status_label.setText(f"Found {len(rows)} file(s) in {elapsed_ms:.1f} ms{capped}")
+
+    def status_label_set(self, text: str) -> None:
+        self.status_label.setText(text)
+
+    def _on_auto_renamed(self, event) -> None:
+        self.status_label.setText(
+            f"Auto-renamed: {Path(event.old_path).name} → {Path(event.new_path).name}  "
+            "(undo in Settings → Auto-rename)"
+        )
 
     # -- result actions -------------------------------------------------------
     def _selected_path(self) -> str | None:

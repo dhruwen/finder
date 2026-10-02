@@ -13,6 +13,7 @@ from PyQt6.QtCore import QObject, pyqtSignal
 
 from app.core import db as db_mod
 from app.core.config import Settings
+from app.ui.auto_rename_service import AutoRenameService
 
 
 class AppState(QObject):
@@ -24,6 +25,9 @@ class AppState(QObject):
         self.settings = Settings.load()
         self.current_root: str | None = self.settings.last_root
         self._conn: sqlite3.Connection | None = None
+        # Watches Settings.auto_rename_rules folders for the whole session,
+        # independent of which folder is currently open for search.
+        self.auto_rename = AutoRenameService(self.settings, self)
         if self.current_root:
             self._open_connection(self.current_root)
 

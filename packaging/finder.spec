@@ -30,6 +30,8 @@ PROJECT_ROOT = os.path.abspath(os.path.join(SPECPATH, ".."))
 # in a frozen build).
 datas, binaries, hiddenimports = [
     (os.path.join(PROJECT_ROOT, "docs", "USER_GUIDE.md"), "docs"),
+    # Check-mark image referenced by style.py's checkbox styling.
+    (os.path.join(PROJECT_ROOT, "app", "ui", "assets"), os.path.join("app", "ui", "assets")),
 ], [], collect_submodules("app")
 for pkg in ("spacy", "thinc", "xx_ent_wiki_sm"):
     try:
