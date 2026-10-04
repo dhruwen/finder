@@ -7,6 +7,7 @@ reviewing a full old->new preview and clicking "Yes, apply changes".
 """
 from __future__ import annotations
 
+import shutil
 import time
 from pathlib import Path
 
@@ -19,11 +20,12 @@ from PyQt6.QtWidgets import (
     QTextEdit, QTabWidget, QTreeWidget, QTreeWidgetItem, QWidget,
 )
 
-from app.core.migration import summarize, write_report
+from app.core import report
+from app.core.migration import write_report
 from app.ui.app_state import AppState
 from app.ui.icons import AI_BADGE, FOLDER_ICON, file_icon
 from app.ui.workers import RestructureApplyWorker, RestructurePlanWorker
-from app.ui import os_utils
+from app.ui import os_utils, report_export
 
 NEW_FOLDER_COLOR = QColor("#2563eb")  # app accent color (see style.py)
 
@@ -377,30 +379,97 @@ class DonePage(QWizardPage):
         layout = QVBoxLayout(self)
         self.summary_label = QLabel()
         self.summary_label.setWordWrap(True)
+        self.summary_label.setTextFormat(Qt.TextFormat.RichText)
         layout.addWidget(self.summary_label)
-        self.report_btn = QPushButton("Open migration report")
-        self.report_btn.clicked.connect(self._open_report)
-        layout.addWidget(self.report_btn)
+
+        report_row = QHBoxLayout()
+        self.view_btn = QPushButton("View report")
+        self.view_btn.setObjectName("primaryButton")
+        self.view_btn.setToolTip("Interactive report in your web browser: before/after folder trees, search, problems.")
+        self.view_btn.clicked.connect(lambda: self._open(self._files.html if self._files else None))
+        self.pdf_btn = QPushButton("Open PDF")
+        self.pdf_btn.clicked.connect(lambda: self._open(self._files.pdf if self._files else None))
+        self.save_pdf_btn = QPushButton("Save PDF as…")
+        self.save_pdf_btn.clicked.connect(self._save_pdf_as)
+        report_row.addWidget(self.view_btn)
+        report_row.addWidget(self.pdf_btn)
+        report_row.addWidget(self.save_pdf_btn)
+        report_row.addStretch(1)
+        layout.addLayout(report_row)
+
+        self.csv_link = QLabel('<a href="csv">Technical log (CSV)</a>')
+        self.csv_link.setStyleSheet("color: #6b7280; font-size: 11px;")
+        self.csv_link.linkActivated.connect(lambda _: self._open(self._files.csv if self._files else None))
+        layout.addWidget(self.csv_link)
+
+        layout.addSpacing(12)
+        self.keep_tidy_check = QCheckBox(
+            "Keep this folder tidy: automatically rename new files added here to match this naming"
+        )
+        self.keep_tidy_check.setToolTip(
+            "New files are renamed (never moved) while Finder is open. Every rename can be "
+            "undone, and this can be turned off anytime in Settings → Auto-rename."
+        )
+        layout.addWidget(self.keep_tidy_check)
         layout.addStretch(1)
-        self._report_path: Path | None = None
+        self._files = None
 
     def initializePage(self) -> None:
         results = self.wizard().results or []
-        summary = summarize(results)
+        plan = self.wizard().plan
         reports_dir = Path(self.state.current_root) / ".finder_index" / "reports"
-        report_path = reports_dir / f"migration_{int(time.time())}.csv"
-        write_report(results, report_path, fmt="csv")
-        self._report_path = report_path
-        self.summary_label.setText(
-            f"Success: {summary.get('success', 0)}\n"
-            f"Errors: {summary.get('error', 0)}\n\n"
-            f"Report saved to:\n{report_path}"
-        )
+        try:
+            self._files = report_export.write_all(
+                self.state.current_root, results, plan.new_folders if plan else set(), reports_dir
+            )
+        except Exception as e:  # noqa: BLE001 - never lose the raw log over a rendering problem
+            self._files = None
+            csv_path = write_report(results, reports_dir / f"migration_{int(time.time())}.csv", fmt="csv")
+            self.summary_label.setText(f"Done. The detailed report couldn't be created ({e}).<br>Log saved to: {csv_path}")
+            for btn in (self.view_btn, self.pdf_btn, self.save_pdf_btn):
+                btn.setEnabled(False)
+        else:
+            data = self._files.data
+            failed = data.count(report.FAILED)
+            moved = data.count(report.MOVED, report.MOVED_RENAMED)
+            lines = [
+                f"<b>{len(data.changes) - failed}</b> file(s) reorganized: "
+                f"{data.count(report.RENAMED)} renamed in place, {moved} moved into the new folder structure.",
+                f"<b>{len(data.new_folders)}</b> new folder(s) created.",
+            ]
+            if data.emptied_folders:
+                lines.append(f"<b>{len(data.emptied_folders)}</b> old folder(s) are now empty (listed in the report).")
+            lines.append(
+                f'<span style="color:#b91c1c;"><b>{failed}</b> file(s) could not be changed and were left as they were.</span>'
+                if failed else '<span style="color:#15803d;">No problems.</span>'
+            )
+            lines.append("<br>The report shows your folder before and after, and what happened to every file.")
+            self.summary_label.setText("<br>".join(lines))
+        self.keep_tidy_check.setChecked(self.state.auto_rename.is_watched(self.state.current_root))
         self.state.notify_index_changed()
 
-    def _open_report(self) -> None:
-        if self._report_path:
-            os_utils.open_file(str(self._report_path))
+    def _save_pdf_as(self) -> None:
+        if not self._files:
+            return
+        target, _ = QFileDialog.getSaveFileName(
+            self, "Save report as PDF", str(Path.home() / "Desktop" / self._files.pdf.name), "PDF (*.pdf)"
+        )
+        if target:
+            shutil.copyfile(self._files.pdf, target)
+            os_utils.reveal_in_file_manager(target)
+
+    def _open(self, path: Path | None) -> None:
+        if path and path.exists():
+            os_utils.open_file(str(path))
+
+    def validatePage(self) -> bool:
+        root = self.state.current_root
+        if root and self.keep_tidy_check.isChecked() != self.state.auto_rename.is_watched(root):
+            if self.keep_tidy_check.isChecked():
+                self.state.auto_rename.set_rule(root)
+            else:
+                self.state.auto_rename.remove_rule(root)
+        return True
 
 
 class RestructureWizard(QWizard):

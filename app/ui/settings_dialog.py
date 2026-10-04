@@ -10,11 +10,12 @@ from __future__ import annotations
 from PyQt6.QtWidgets import QDialog, QVBoxLayout, QHBoxLayout, QListWidget, QStackedWidget, QPushButton
 
 from app.ui.app_state import AppState
+from app.ui.auto_rename_screen import AutoRenameScreen
 from app.ui.index_screen import IndexScreen
 from app.ui.warnings_screen import WarningsScreen
 from app.ui.settings_screen import SettingsScreen
 
-NAV_ITEMS = ["Index Management", "Warnings", "Preferences"]
+NAV_ITEMS = ["Index Management", "Warnings", "Auto-rename", "Preferences"]
 
 
 class SettingsDialog(QDialog):
@@ -35,6 +36,7 @@ class SettingsDialog(QDialog):
         self.stack = QStackedWidget()
         self.stack.addWidget(IndexScreen(state))
         self.stack.addWidget(WarningsScreen(state))
+        self.stack.addWidget(AutoRenameScreen(state))
         self.stack.addWidget(SettingsScreen(state))
 
         body.addWidget(self.nav)

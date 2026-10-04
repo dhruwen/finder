@@ -55,8 +55,9 @@ This is the main page, and it's always just:
 
 - A **search box** at the top — type a name, document type, or any keyword
   (e.g. `John ITR 2024`) and press Enter or click **Search**.
-- Two quick filters right below it: **Name / Keyword** (matches any person,
-  employee, client, or other name Finder found) and **Year**.
+- A **Year** filter right below it. (There's no separate name field: the
+  search box already matches the **Detected name** column — the person,
+  employee or client Finder found for each file.)
 - A **More filters** link that expands to show **File type** — one dropdown
   button per category (Documents, Spreadsheets, Code, Images, Design,
   Archives, …). Only categories that actually have matching files in the
@@ -117,9 +118,17 @@ but only after you approve an exact preview:
 5. Tick the confirmation checkbox and continue — you'll see one more "Are you
    sure?" dialog before anything changes.
 6. Watch progress as files move, with any errors listed live.
-7. See a summary and open the **migration report** — a CSV of every old
-   path, new path, and result, saved inside the folder under
-   `.finder_index/reports/`.
+7. See a plain-language summary, then open the report:
+   - **View report** opens an interactive page in your web browser: your
+     folder **as it is now** (each file shows what it used to be called or
+     where it came from, new folders are marked), your folder **as it was
+     before** (each file shows where it went, and old folders that are now
+     empty are marked), a searchable list of every change, and any problems.
+   - **Open PDF** / **Save PDF as…** gives the same report as a PDF to print
+     or share.
+   - **Technical log (CSV)** is the raw old path -> new path list.
+   All reports are kept in the hidden `.finder_index/reports/` folder inside
+   the restructured folder.
 
 Nothing moves until you've seen the full preview and clicked to confirm. All
 changes stay strictly inside the folder you selected. You can turn the AI
@@ -132,6 +141,28 @@ a document archive, and leaves every file in it exactly where it is — the
 preview tells you how many files were skipped this way. If the folder you
 picked *is itself* a project, Finder shows a clear explanation and won't let
 you proceed at all, rather than silently doing nothing.
+
+### Keep a folder tidy automatically (Auto-rename)
+
+On the last page of the wizard, tick **"Keep this folder tidy"** — or add any
+folder under **Settings -> Auto-rename**. From then on, while Finder is open,
+every new file added to that folder (or its subfolders) is renamed to match
+the naming the folder already uses. There are no rules to write: Finder
+learns the convention from the existing files (e.g.
+`20240301_Ramesh_ITR_Notes.pdf` -> date, client, document type,
+description) and fills it in from the new file's name and the folder it
+landed in, so `scan0001.pdf` dropped into `Ramesh/ITR/` becomes
+`20241002_Ramesh_ITR.pdf`. If a folder has no consistent naming yet,
+Finder's standard naming is used.
+
+- Files are only **renamed, never moved**.
+- Partial downloads, hidden files and files still being copied are left
+  alone until they're complete.
+- A file you rename yourself is never renamed back.
+- Every rename appears under **Settings -> Auto-rename -> Recent renames**
+  with **Undo**, and in a full log file.
+- To use your own naming for a folder, select it and click **Custom
+  naming…** (e.g. `{client}_{doctype}_{year}`).
 
 ## 5. Menu bar
 
