@@ -156,7 +156,10 @@ class AutoRenameService(QObject):
             try:
                 if not e.is_file(follow_symlinks=False):
                     continue
-                st = e.stat(follow_symlinks=False)
+                # os.stat, not DirEntry.stat: on Windows the latter leaves
+                # st_ino/st_dev as 0, which would make every file look the
+                # same and break "don't rename what the user renamed".
+                st = os.stat(e.path, follow_symlinks=False)
             except OSError:
                 continue
             files[e.name] = st.st_ino
