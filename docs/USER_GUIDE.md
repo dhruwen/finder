@@ -16,9 +16,12 @@ each thing.
 
 ## 1. Installing
 
-- **Windows:** run `Finder.exe`. No other install is required. On first
-  launch, Windows SmartScreen may show "Windows protected your PC" because
-  the app isn't yet code-signed — click **More info -> Run anyway**.
+- **Windows:** double-click `FinderSetup-<version>.exe`. It installs in one
+  step (no administrator password needed), adds Finder to the Start menu and
+  desktop, and offers to launch it. Windows SmartScreen may first show
+  "Windows protected your PC" because the installer isn't code-signed yet —
+  click **More info -> Run anyway**. To remove it later: Settings -> Apps ->
+  Finder -> Uninstall (your settings and indexes are kept).
 - **macOS:** open `Finder.app` (or the `.dmg`, then drag it to Applications).
   On first launch, macOS Gatekeeper will refuse to open an app from an
   unidentified developer. Right-click (or Control-click) the app, choose

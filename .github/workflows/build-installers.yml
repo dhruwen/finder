@@ -1,0 +1,138 @@
+# Builds the one-click installers:
+#   Windows: FinderSetup-<version>.exe  (Inno Setup, no admin rights needed)
+#   macOS:   Finder-<version>.dmg       (Apple Silicon, drag to Applications)
+#
+# Runs on PRs that touch the app or packaging, on demand (Actions tab ->
+# "Build installers" -> Run workflow), and on version tags. Pushing a tag
+# like v1.0.0 also publishes both installers as a GitHub Release.
+#
+# PyInstaller can only build for the OS it runs on, which is why each
+# installer is built on its own runner.
+name: Build installers
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+  pull_request:
+    paths:
+      - "app/**"
+      - "packaging/**"
+      - "requirements*.txt"
+      - ".github/workflows/build-installers.yml"
+
+permissions:
+  contents: write  # only used by the release job, on tags
+
+env:
+  PYTHON_VERSION: "3.12"  # spaCy has no wheels for 3.14 yet
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: requirements*.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+
+      - name: Run tests
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: pytest -q
+
+      - name: Build app with PyInstaller
+        run: pyinstaller packaging/finder.spec --noconfirm
+
+      - name: Self-test the packaged app
+        shell: pwsh
+        run: |
+          $p = Start-Process -FilePath "dist\Finder\Finder.exe" -ArgumentList "--self-test" -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "Packaged app self-test failed (exit code $($p.ExitCode))" }
+
+      - name: Install Inno Setup
+        run: choco install innosetup --no-progress -y
+
+      - name: Build installer
+        shell: pwsh
+        run: |
+          $version = (Select-String -Path app/__init__.py -Pattern '__version__ = "(.+)"').Matches[0].Groups[1].Value
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" "/DAppVersion=$version" packaging\windows\finder.iss
+          if ($LASTEXITCODE -ne 0) { throw "Inno Setup failed" }
+
+      - name: Test silent install and uninstall
+        shell: pwsh
+        run: |
+          $setup = Get-ChildItem dist\installer\FinderSetup-*.exe | Select-Object -First 1
+          $p = Start-Process $setup.FullName -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART" -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "Installer failed (exit code $($p.ExitCode))" }
+          $exe = "$env:LOCALAPPDATA\Programs\Finder\Finder.exe"
+          if (-not (Test-Path $exe)) { throw "Finder.exe not found after install" }
+          $p = Start-Process $exe -ArgumentList "--self-test" -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "Installed app self-test failed" }
+          $p = Start-Process "$env:LOCALAPPDATA\Programs\Finder\unins000.exe" -ArgumentList "/VERYSILENT" -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "Uninstaller failed" }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Finder-Windows-Installer
+          path: dist/installer/FinderSetup-*.exe
+          if-no-files-found: error
+
+  macos:
+    runs-on: macos-14  # Apple Silicon
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: requirements*.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+
+      - name: Run tests
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: pytest -q
+
+      - name: Build app with PyInstaller
+        run: pyinstaller packaging/finder.spec --noconfirm
+
+      - name: Self-test the packaged app
+        run: dist/Finder.app/Contents/MacOS/Finder --self-test
+
+      - name: Build DMG
+        run: bash packaging/macos/make_dmg.sh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Finder-macOS-DMG
+          path: dist/installer/Finder-*.dmg
+          if-no-files-found: error
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [windows, macos]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: installers
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: installers/*
+          generate_release_notes: true

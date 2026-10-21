@@ -4,19 +4,36 @@
 #   pyinstaller packaging/finder.spec --noconfirm
 #
 # Produces, per OS, under dist/:
-#   Windows: dist/Finder/Finder.exe        (folder build) or dist/Finder.exe (onefile)
-#   macOS:   dist/Finder.app
-#   Linux:   dist/Finder/Finder            (wrap with AppImageTool for an .AppImage)
+#   Windows: dist/Finder/Finder.exe   (+ its support files; wrapped into a
+#                                       one-click installer by packaging/windows/finder.iss)
+#   macOS:   dist/Finder.app          (wrapped into a .dmg by packaging/macos/make_dmg.sh)
+#   Linux:   dist/Finder/Finder       (wrap with AppImageTool for an .AppImage)
 #
-# This one spec file is used on all three platforms; PyInstaller reads
-# `sys.platform` at build time via the block below to decide bundle type.
+# Always a folder ("onedir") build, never "onefile": with spaCy bundled, a
+# onefile exe would unpack a few hundred MB to a temp folder on every single
+# launch. The installer/DMG gives users the one-click experience instead.
 
 import os
+import re
 import sys
 from PyInstaller.utils.hooks import collect_submodules, collect_all
 
 block_cipher = None
 PROJECT_ROOT = os.path.abspath(os.path.join(SPECPATH, ".."))
+ICONS = os.path.join(PROJECT_ROOT, "packaging", "icons")
+
+with open(os.path.join(PROJECT_ROOT, "app", "__init__.py"), encoding="utf-8") as f:
+    VERSION = re.search(r'__version__\s*=\s*"([^"]+)"', f.read()).group(1)
+
+# Bundled so Help > User Guide and the stylesheet's check-mark image work in
+# the packaged app too (read at runtime via app/ui/resources.resource_path,
+# which resolves to sys._MEIPASS in a frozen build).
+datas = [
+    (os.path.join(PROJECT_ROOT, "docs", "USER_GUIDE.md"), "docs"),
+    (os.path.join(PROJECT_ROOT, "app", "ui", "assets"), os.path.join("app", "ui", "assets")),
+]
+binaries = []
+hiddenimports = collect_submodules("app")
 
 # spaCy + its small multilingual NER model (app/core/ner.py) are optional at
 # import time but, when present, need their data files (model weights,
@@ -25,14 +42,6 @@ PROJECT_ROOT = os.path.abspath(os.path.join(SPECPATH, ".."))
 # If these packages aren't installed, collect_all() below just returns
 # nothing and the build proceeds without them; the app still runs fine, it
 # just falls back to non-AI restructuring (see app/core/ner.is_available()).
-# Bundled so Help > User Guide works in the packaged app too (read at
-# runtime via app/ui/resources.resource_path, which resolves to sys._MEIPASS
-# in a frozen build).
-datas, binaries, hiddenimports = [
-    (os.path.join(PROJECT_ROOT, "docs", "USER_GUIDE.md"), "docs"),
-    # Check-mark image referenced by style.py's checkbox styling.
-    (os.path.join(PROJECT_ROOT, "app", "ui", "assets"), os.path.join("app", "ui", "assets")),
-], [], collect_submodules("app")
 for pkg in ("spacy", "thinc", "xx_ent_wiki_sm"):
     try:
         pkg_datas, pkg_binaries, pkg_hidden = collect_all(pkg)
@@ -51,60 +60,57 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=["tkinter", "test", "unittest"],
+    excludes=["tkinter", "test", "unittest", "pytest"],
     cipher=block_cipher,
     noarchive=False,
 )
 
 pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 
-# Windows/Linux: a single onefile executable keeps the "one-go" install promise.
-# macOS: build as a folder (EXE + COLLECT) so BUNDLE can wrap it into a .app.
-onefile = sys.platform != "darwin"
-
-if onefile:
-    exe = EXE(
-        pyz,
-        a.scripts,
-        a.binaries,
-        a.zipfiles,
-        a.datas,
-        [],
-        name="Finder",
-        debug=False,
-        strip=False,
-        upx=True,
-        console=False,
-        onefile=True,
-    )
+if sys.platform == "win32":
+    icon = os.path.join(ICONS, "finder.ico")
+elif sys.platform == "darwin":
+    icon = os.path.join(ICONS, "finder.icns")
 else:
-    exe = EXE(
-        pyz,
-        a.scripts,
-        [],
-        exclude_binaries=True,
-        name="Finder",
-        debug=False,
-        strip=False,
-        upx=True,
-        console=False,
-    )
-    coll = COLLECT(
-        exe,
-        a.binaries,
-        a.zipfiles,
-        a.datas,
-        strip=False,
-        upx=True,
-        name="Finder",
-    )
+    icon = None
+
+exe = EXE(
+    pyz,
+    a.scripts,
+    [],
+    exclude_binaries=True,
+    name="Finder",
+    debug=False,
+    strip=False,
+    # UPX-compressed Qt/spaCy DLLs are a classic antivirus false positive
+    # on Windows and save little; leave binaries as they are.
+    upx=False,
+    console=False,
+    icon=icon,
+)
+coll = COLLECT(
+    exe,
+    a.binaries,
+    a.zipfiles,
+    a.datas,
+    strip=False,
+    upx=False,
+    name="Finder",
+)
+
+if sys.platform == "darwin":
     app = BUNDLE(
         coll,
         name="Finder.app",
-        icon=None,
+        icon=icon,
         bundle_identifier="com.finder.app",
+        version=VERSION,
         info_plist={
-            "NSHighResolutionCapable": "True",
-            "CFBundleShortVersionString": "1.0.0",
+            "CFBundleName": "Finder",
+            "CFBundleDisplayName": "Finder",
+            "CFBundleShortVersionString": VERSION,
+            "CFBundleVersion": VERSION,
+            "NSHighResolutionCapable": True,
+            "LSMinimumSystemVersion": "11.0",
         },
     )

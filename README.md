@@ -41,15 +41,18 @@ pip install -r requirements-dev.txt
 pytest
 ```
 
-## Build a standalone installer
+## Build the one-click installers
 
-```bash
-pip install -r requirements-dev.txt
-pyinstaller packaging/finder.spec --noconfirm
-```
+GitHub Actions builds both on every relevant PR and on version tags
+(`.github/workflows/build-installers.yml`):
 
-See [docs/DEVELOPER.md](docs/DEVELOPER.md#packaging) for per-OS notes
-(Windows EXE, macOS .app/DMG, Linux AppImage).
+- **Windows:** `FinderSetup-<version>.exe`: double-click, no admin rights
+  needed, everything (Python, Qt, the local AI model) included.
+- **macOS:** `Finder-<version>.dmg`: drag Finder to Applications.
+
+Get them from the workflow run's **Artifacts**, or from the GitHub Release
+created when you push a tag like `v1.0.0`. To build locally instead (Python
+3.12), see [docs/DEVELOPER.md](docs/DEVELOPER.md#packaging).
 
 ## Project layout
 
